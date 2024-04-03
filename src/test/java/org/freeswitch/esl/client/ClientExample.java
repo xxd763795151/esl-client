@@ -7,26 +7,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.TimeUnit;
 
 public class ClientExample {
     private static final Logger L = LoggerFactory.getLogger(ClientExample.class);
 
     public static void main(String[] args) {
         try {
+            args = new String[] {"ClueCon"};
             if (args.length < 1) {
                 System.out.println("Usage: java ClientExample PASSWORD");
                 return;
             }
 
-            String password = args[0];
+            String password = "ClueCon";
 
             Client client = new Client();
 
             client.addEventListener((ctx, event) -> L.info("Received event: {}", event.getEventName()));
 
-            client.connect(new InetSocketAddress("localhost", 8021), password, 10);
+            client.connect(new InetSocketAddress("192.168.56.111", 8021), password, 10);
             client.setEventSubscriptions(EventFormat.PLAIN, "all");
 
+            TimeUnit.MINUTES.sleep(10);
         } catch (Throwable t) {
             Throwables.propagate(t);
         }

@@ -1,20 +1,87 @@
-apply plugin: 'java'
-apply plugin: 'maven'
+plugins {
+    id "java"
+    id "maven-publish"
+}
 
 group = 'org.freeswitch.esl.client'
 version = '0.10.0-SNAPSHOT'
 
-sourceCompatibility = 1.8
-targetCompatibility = 1.8
+// 打包sourcesJar任务
+tasks.register('sourcesJar', Jar) {
+    dependsOn classes
+    archiveClassifier = 'sources'
+    from sourceSets.main.allSource
+}
+
+// 打包javadocJar任务
+//tasks.register('javadocJar', Jar) {
+//    dependsOn javadoc
+//    archiveClassifier = 'javadoc'
+//    from javadoc.destinationDir
+//}
+
+// 解决javadoc打包乱码
+//javadoc {
+//    options {
+//        encoding "UTF-8"
+//        charSet 'UTF-8'
+//        author true
+//        version true
+//        title "文档大标题"
+//    }
+//}
+
+java {
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+}
 
 repositories {
-     maven { url "http://repo.maven.apache.org/maven2" }
+    mavenLocal()
+    mavenCentral()
 }
 
 dependencies {
-    compile 'io.netty:netty-all:4.1.17.Final'
-    compile 'com.google.guava:guava:23.4-jre'
-    compile 'org.slf4j:slf4j-api:1.7.25'
-    runtime 'ch.qos.logback:logback-classic:1.2.3'
-    testCompile 'junit:junit:4.8.1'
+    implementation 'io.netty:netty-all:4.1.65.Final'
+    implementation 'com.google.guava:guava:23.4-jre'
+    implementation 'org.slf4j:slf4j-api:1.7.25'
+    implementation 'ch.qos.logback:logback-classic:1.2.3'
+    testImplementation 'junit:junit:4.8.1'
 }
+
+//build
+
+publishing {
+    publications {
+        myLibrary(MavenPublication) {
+            groupId project.group
+            artifactId project.name
+            version project.version
+            from components.java
+
+            // 增加 sourcesJar、javadocJar 任务
+            artifact sourcesJar
+//            artifact javadocJar
+        }
+    }
+
+    repositories {
+        mavenLocal()
+
+        // 其他maven仓库
+        maven {
+            allowInsecureProtocol = true
+//            def releasesRepoUrl = layout.buildDirectory.dir('repos/releases')
+//            def snapshotsRepoUrl = layout.buildDirectory.dir('repos/snapshots')
+            def snapshotsRepoUrl = 'http://nexus.com/repository/maven-snapshots/'
+            def releasesRepoUrl = 'http://nexus.com/repository/maven-releases/'
+            println(">>>>>>>>>开始发布到私服>>>>>>>>>>")
+            credentials {
+                username 'admin' // 仓库发布用户名
+                password 'admin' // 仓库发布用户密码
+            }
+            url = version.endsWith('SNAPSHOT') ? uri(snapshotsRepoUrl) : uri(releasesRepoUrl)
+        }
+    }
+}
+
