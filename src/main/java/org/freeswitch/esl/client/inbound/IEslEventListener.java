@@ -36,4 +36,7 @@ public interface IEslEventListener {
 	 */
 	void onEslEvent(Context ctx, EslEvent event);
 
+	default void onDisconnected() {
+	}
+
 }

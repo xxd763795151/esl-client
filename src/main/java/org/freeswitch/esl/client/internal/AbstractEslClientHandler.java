@@ -82,6 +82,12 @@ public abstract class AbstractEslClientHandler extends SimpleChannelInboundHandl
 
 		ctx.fireExceptionCaught(e);
 
+		handleDisconnectionNotice();
+	}
+
+	@Override
+	public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+		handleDisconnectionNotice();
 	}
 
 	@Override
@@ -91,11 +97,15 @@ public abstract class AbstractEslClientHandler extends SimpleChannelInboundHandl
 				contentType.equals(Value.TEXT_EVENT_XML)) {
 			//  transform into an event
 			final EslEvent eslEvent = new EslEvent(message);
-			if (eslEvent.getEventName().equals("BACKGROUND_JOB")) {
+			if ("BACKGROUND_JOB".equals(eslEvent.getEventName())) {
 				final String backgroundUuid = eslEvent.getEventHeaders().get(EslEventHeaderNames.JOB_UUID);
-				final CompletableFuture<EslEvent> future = backgroundJobs.remove(backgroundUuid);
-				if (null != future) {
-					future.complete(eslEvent);
+				if (backgroundUuid != null) {
+					final CompletableFuture<EslEvent> future = backgroundJobs.remove(backgroundUuid);
+					if (null != future) {
+						future.complete(eslEvent);
+					}
+				} else {
+					log.info("Event BACKGROUND_JOB, {} is null", EslEventHeaderNames.JOB_UUID);
 				}
 			} else {
 				handleEslEvent(ctx, eslEvent);
@@ -106,7 +116,7 @@ public abstract class AbstractEslClientHandler extends SimpleChannelInboundHandl
 	}
 
 	protected void handleEslMessage(ChannelHandlerContext ctx, EslMessage message) {
-		log.info("Received message: [{}]", message);
+		log.debug("Received message: [{}]", message);
 		final String contentType = message.getContentType();
 
 		switch (contentType) {

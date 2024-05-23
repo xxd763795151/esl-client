@@ -342,6 +342,9 @@ public class Client implements IModEslApi {
 		@Override
 		public void disconnected() {
 			log.info("Disconnected ...");
+			clientContext.ifPresent(Context::closeChannel);
+			clientContext = Optional.empty();
+			eventListeners.forEach(IEslEventListener::onDisconnected);
 		}
 	};
 }
