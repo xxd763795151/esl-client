@@ -1,35 +1,37 @@
 plugins {
     id "java"
     id "maven-publish"
+    id "signing"
 }
 
-group = 'org.freeswitch.esl.client'
-version = '0.10.0-SNAPSHOT'
+group = 'io.github.xxd763795151'
+//group = 'org.freeswitch.esl.client'
+version = '1.0.0'
 
-// 打包sourcesJar任务
 tasks.register('sourcesJar', Jar) {
     dependsOn classes
     archiveClassifier = 'sources'
-    from sourceSets.main.allSource
+        from sourceSets.main.allSource
 }
 
-// 打包javadocJar任务
-//tasks.register('javadocJar', Jar) {
-//    dependsOn javadoc
-//    archiveClassifier = 'javadoc'
-//    from javadoc.destinationDir
-//}
+tasks.register('javadocJar', Jar) {
+    dependsOn javadoc
+    archiveClassifier = 'javadoc'
+    from javadoc.destinationDir
+}
 
-// 解决javadoc打包乱码
-//javadoc {
-//    options {
-//        encoding "UTF-8"
-//        charSet 'UTF-8'
-//        author true
-//        version true
-//        title "文档大标题"
-//    }
-//}
+javadoc {
+    options {
+        encoding "UTF-8"
+        charSet 'UTF-8'
+        author true
+        version true
+        title "FreeSWITCH ESL Client"
+        failOnError false
+        noTimestamp true
+        addStringOption '-Xdoclint:none'
+    }
+}
 
 java {
     sourceCompatibility = '1.8'
@@ -39,6 +41,10 @@ java {
 repositories {
     mavenLocal()
     mavenCentral()
+    maven {
+        name = 'central'
+        url = 'https://repo1.maven.org/maven2/'
+    }
 }
 
 dependencies {
@@ -49,8 +55,6 @@ dependencies {
     testImplementation 'junit:junit:4.8.1'
 }
 
-//build
-
 publishing {
     publications {
         myLibrary(MavenPublication) {
@@ -59,29 +63,60 @@ publishing {
             version project.version
             from components.java
 
-            // 增加 sourcesJar、javadocJar 任务
             artifact sourcesJar
-//            artifact javadocJar
+            artifact javadocJar
+            
+            pom {
+                name = 'FreeSWITCH ESL Client'
+                description = 'FreeSWITCH Event Socket Library Client for Java'
+                url = 'https://github.com/xxd763795151/esl-client'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'freeswitch'
+                        name = 'xxd763795151'
+                        email = '763795151@qq.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/xxd763795151/esl-client.git'
+                    developerConnection = 'scm:git:ssh://github.com/xxd763795151/esl-client.git'
+                    url = 'https://github.com/xxd763795151/esl-client'
+                }
+            }
         }
     }
 
     repositories {
         mavenLocal()
-
-        // 其他maven仓库
+        mavenCentral()
         maven {
-            allowInsecureProtocol = true
-//            def releasesRepoUrl = layout.buildDirectory.dir('repos/releases')
-//            def snapshotsRepoUrl = layout.buildDirectory.dir('repos/snapshots')
-            def snapshotsRepoUrl = 'http://nexus.com/repository/maven-snapshots/'
-            def releasesRepoUrl = 'http://nexus.com/repository/maven-releases/'
-            println(">>>>>>>>>开始发布到私服>>>>>>>>>>")
+            name = 'central'
+            def releasesRepoUrl = layout.buildDirectory.dir('repos/releases')
+            def snapshotsRepoUrl = layout.buildDirectory.dir('repos/snapshots')
+            url = version.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+//            url = version.endsWith('SNAPSHOT')
+//                ? 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
+//                : 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
             credentials {
-                username 'admin' // 仓库发布用户名
-                password 'admin' // 仓库发布用户密码
+                username System.getenv('MAVEN_USERNAME') ?: project.findProperty('mavenUsername')
+                password System.getenv('MAVEN_PASSWORD') ?: project.findProperty('mavenPassword')
+                println "Username: $username"
             }
-            url = version.endsWith('SNAPSHOT') ? uri(snapshotsRepoUrl) : uri(releasesRepoUrl)
         }
+    }
+}
+
+if (project.hasProperty('signing.enabled') && project.property('signing.enabled') == 'true') {
+    signing {
+        useGpgCmd()
+        sign publishing.publications.myLibrary
+
     }
 }
 
