@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'io.github.xxd763795151'
-version = '1.0.0'
+version = '1.0.1'
 
 tasks.register('sourcesJar', Jar) {
     dependsOn classes
@@ -143,7 +143,7 @@ publishing {
     }
 }
 
-if (project.hasProperty('signing.enabled') && project.property('signing.enabled') == 'true') {
+if (project.hasProperty('signing.enabled') && project.property('signing.enabled') == 'true' && !gradle.startParameter.taskNames.any { it.contains('publishToMavenLocal') }) {
     signing {
         useGpgCmd()
         sign publishing.publications.myLibrary

@@ -318,6 +318,18 @@ public class Client implements IModEslApi {
 
 	}
 
+    /**
+     * Terminate the client and close the socket connection
+     */
+    public void terminate() {
+        if (clientContext.isPresent()) {
+            clientContext.get().closeChannel();
+            log.info("Closing channel");
+        } else {
+            log.info("Already terminated");
+        }
+    }
+
 	/*
 		*  Internal observer of the ESL protocol
 		*/
