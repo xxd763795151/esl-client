@@ -54,6 +54,11 @@ dependencies {
     testImplementation 'junit:junit:4.8.1'
 }
 
+def sonatypeUsername = System.getenv('SONATYPE_USERNAME') ?: project.findProperty('sonatypeUsername')
+def sonatypePassword = System.getenv('SONATYPE_PASSWORD') ?: project.findProperty('sonatypePassword')
+def centralNamespace = (System.getenv('CENTRAL_NAMESPACE') ?: project.findProperty('centralNamespace') ?: project.group).toString()
+def centralPublishingType = (System.getenv('CENTRAL_PUBLISHING_TYPE') ?: project.findProperty('centralPublishingType') ?: 'user_managed').toString()
+
 publishing {
     publications {
         myLibrary(MavenPublication) {
@@ -124,28 +129,78 @@ publishing {
     }
 
     repositories {
-        mavenLocal()
-        mavenCentral()
         maven {
-            name = 'central'
-            def releasesRepoUrl = layout.buildDirectory.dir('repos/releases')
-            def snapshotsRepoUrl = layout.buildDirectory.dir('repos/snapshots')
-            url = version.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
-//            url = version.endsWith('SNAPSHOT')
-//                ? 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
-//                : 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
+            name = 'sonatype'
+            url = version.endsWith('SNAPSHOT')
+                ? uri('https://central.sonatype.com/repository/maven-snapshots/')
+                : uri('https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/')
             credentials {
-                username System.getenv('MAVEN_USERNAME') ?: project.findProperty('mavenUsername')
-                password System.getenv('MAVEN_PASSWORD') ?: project.findProperty('mavenPassword')
-                println "Username: $username"
+                username = sonatypeUsername
+                password = sonatypePassword
             }
         }
     }
 }
 
-if (project.hasProperty('signing.enabled') && project.property('signing.enabled') == 'true' && !gradle.startParameter.taskNames.any { it.contains('publishToMavenLocal') }) {
+tasks.register('centralUploadDefaultRepository') {
+    doLast {
+        if (!sonatypeUsername || !sonatypePassword) {
+            throw new GradleException('Missing SONATYPE_USERNAME/SONATYPE_PASSWORD (Central Portal user token recommended).')
+        }
+
+        def token = "${sonatypeUsername}:${sonatypePassword}".bytes.encodeBase64().toString()
+        def url = "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/${centralNamespace}?publishing_type=${centralPublishingType}"
+        def connection = (HttpURLConnection) new URL(url).openConnection()
+        connection.setRequestMethod('POST')
+        connection.setDoOutput(true)
+        connection.setRequestProperty('Authorization', "Bearer ${token}")
+        connection.getOutputStream().close()
+
+        def code = connection.getResponseCode()
+        if (code < 200 || code >= 300) {
+            def errorBody = connection.getErrorStream() ? connection.getErrorStream().getText('UTF-8') : ''
+            throw new GradleException("Central upload failed: HTTP ${code}${errorBody ? " - ${errorBody}" : ''}")
+        }
+    }
+}
+
+tasks.named('publishMyLibraryPublicationToSonatypeRepository').configure {
+    finalizedBy('centralUploadDefaultRepository')
+    onlyIf { !project.version.toString().endsWith('SNAPSHOT') }
+}
+
+def signingEnabled = (System.getenv('SIGNING_ENABLED') ?: project.findProperty('signing.enabled') ?: 'true').toString().toBoolean()
+def publishingToMavenLocal = gradle.startParameter.taskNames.any { it.toLowerCase().contains('publishtomavenlocal') }
+
+def normalizePgpSecretKey = { raw ->
+    if (!raw) {
+        return null
+    }
+    def text = raw.toString().trim()
+    if (text.contains('-----BEGIN PGP')) {
+        return text
+            .readLines()
+            .findAll { line ->
+                def t = line.trim()
+                !(t.isEmpty() || t.startsWith('-----BEGIN PGP') || t.startsWith('-----END PGP') || t.startsWith('='))
+            }
+            .join('')
+    }
+    return text
+}
+
+if (signingEnabled && !publishingToMavenLocal) {
     signing {
-        useGpgCmd()
+        def signingKeyFile = System.getenv('SIGNING_KEY_FILE') ?: project.findProperty('signingKeyFile')
+        def signingKey = signingKeyFile
+            ? new File(signingKeyFile.toString()).getText('UTF-8')
+            : (System.getenv('SIGNING_KEY') ?: project.findProperty('signingKey'))
+        def signingPassword = System.getenv('SIGNING_PASSWORD') ?: project.findProperty('signingPassword')
+        if (signingKey) {
+            useInMemoryPgpKeys(normalizePgpSecretKey(signingKey), signingPassword)
+        } else {
+            useGpgCmd()
+        }
         sign publishing.publications.myLibrary
 
     }
