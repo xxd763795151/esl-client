@@ -1,0 +1,21 @@
+target/
+*.class
+*.log
+hs_err_pid*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+bin/
+
+# local credentials must never be committed
+settings.xml
+gradle.properties
+*.gpg
+*.asc
+
+/MIGRATION.md
