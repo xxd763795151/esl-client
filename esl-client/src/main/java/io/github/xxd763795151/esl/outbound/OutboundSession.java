@@ -28,7 +28,9 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -45,6 +47,8 @@ public final class OutboundSession extends AbstractConnection {
     private final Map<String, Object> attributes = new ConcurrentHashMap<>();
     private final AtomicBoolean handlerStarted = new AtomicBoolean();
     private final EslFuture<Void> terminated = new EslFuture<>();
+    /** {@link System#nanoTime()} by which the session must be closed, set by the first close request. */
+    private final AtomicReference<Long> closeDeadline = new AtomicReference<>();
     private volatile EslEvent channelData;
     private volatile String uuid;
 
@@ -168,7 +172,10 @@ public final class OutboundSession extends AbstractConnection {
         return connection.remoteAddress();
     }
 
-    /** Completes when the session is fully closed and its events were delivered. */
+    /**
+     * Completes when the session is fully closed and its events were delivered, or when the close timeout
+     * expired with listeners still busy (they keep running, but the session no longer counts as active).
+     */
     public CompletableFuture<Void> closeFuture() {
         return Futures.relay(terminated, Function.identity(), worker);
     }
@@ -239,8 +246,15 @@ public final class OutboundSession extends AbstractConnection {
     @Override
     public CompletableFuture<Void> closeGracefully(Duration timeout) {
         moveTo(ConnectionState.CLOSING, null);
-        connection.closeGracefully(timeout);
+        // the socket gets most of the budget, draining the queued events the rest (see Callbacks.onClosed)
+        if (closeDeadline.compareAndSet(null, System.nanoTime() + timeout.toNanos())) {
+            connection.closeGracefully(Duration.ofNanos(timeout.toNanos() * 3 / 4));
+        }
         return Futures.relay(terminated, Function.identity(), worker);
+    }
+
+    private static long remaining(long deadline) {
+        return Math.max(TimeUnit.MILLISECONDS.toNanos(1), deadline - System.nanoTime());
     }
 
     @Override
@@ -280,11 +294,18 @@ public final class OutboundSession extends AbstractConnection {
                 });
             }
             dispatcher.shutdown();
-            dispatcher.awaitIdle().whenComplete((ignored, error) -> {
-                moveTo(ConnectionState.CLOSED, cause);
-                server.sessionClosed(OutboundSession.this);
-                terminated.complete(null);
-            });
+            // closed by the peer rather than by closeGracefully: listeners get the default close timeout
+            closeDeadline.compareAndSet(null, System.nanoTime() + server.sessionCloseTimeout().toNanos());
+            dispatcher.awaitIdle().completeOnTimeout(null, remaining(closeDeadline.get()), TimeUnit.NANOSECONDS)
+                    .whenComplete((ignored, error) -> {
+                        if (dispatcher.backlog() > 0) {
+                            log.warn("{}: event listeners still busy when the close timeout expired, "
+                                    + "releasing the session", OutboundSession.this);
+                        }
+                        moveTo(ConnectionState.CLOSED, cause);
+                        server.sessionClosed(OutboundSession.this);
+                        terminated.complete(null);
+                    });
         }
     }
 }

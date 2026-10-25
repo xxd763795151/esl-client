@@ -142,8 +142,7 @@ public abstract class AbstractConnection implements EslConnection {
             if (reply.isContentType(ContentTypes.COMMAND_REPLY) && new CommandReply(reply).isOk()) {
                 sessionState.record(command);
             }
-            return reply;
-        }));
+        }, Function.identity()));
     }
 
     @Override
@@ -221,14 +220,20 @@ public abstract class AbstractConnection implements EslConnection {
                 .thenCompose(ignored -> withConnection(connection -> connection.execute(uuid, execute)));
     }
 
-    /** Sends a {@code command/reply} command, failing on {@code -ERR} and recording state on success. */
+    /**
+     * Sends a {@code command/reply} command, failing on {@code -ERR} and recording state on success. State is
+     * recorded on the event loop in reply order, so back-to-back commands cannot be applied out of order.
+     */
     protected CompletableFuture<CommandReply> command(EslCommand command) {
         return withConnection(connection -> connection.send(command, reply -> {
+            if (new CommandReply(reply).isOk()) {
+                sessionState.record(command);
+            }
+        }, reply -> {
             CommandReply commandReply = new CommandReply(reply);
             if (!commandReply.isOk()) {
                 throw new CommandFailedException(command.describe(), commandReply.replyText());
             }
-            sessionState.record(command);
             return commandReply;
         }));
     }

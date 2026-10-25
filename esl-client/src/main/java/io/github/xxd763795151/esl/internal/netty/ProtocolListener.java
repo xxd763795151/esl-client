@@ -18,7 +18,11 @@ interface ProtocolListener {
 
     void onRudeRejection(EslMessage message);
 
-    void onReadIdle(int pendingCommands);
+    /**
+     * Nothing was read for the idle timeout. {@code oldestTimedOut}: the command at the head of the queue timed
+     * out and is still waiting for its reply.
+     */
+    void onReadIdle(int pendingCommands, boolean oldestTimedOut);
 
     void onChannelClosed(Throwable cause);
 }

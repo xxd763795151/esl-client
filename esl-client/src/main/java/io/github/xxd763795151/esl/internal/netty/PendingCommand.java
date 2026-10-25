@@ -21,6 +21,7 @@ final class PendingCommand {
     private final CompletableFuture<EslMessage> promise = new CompletableFuture<>();
     private long startNanos;
     private ScheduledFuture<?> timeoutTask;
+    private boolean timedOut;
 
     PendingCommand(EslCommand command, Duration timeout) {
         this.command = command;
@@ -39,12 +40,18 @@ final class PendingCommand {
         return System.nanoTime() - startNanos;
     }
 
+    /** Whether the timeout fired before a reply arrived. Event loop only. */
+    boolean isTimedOut() {
+        return timedOut;
+    }
+
     /** Called on the event loop when the command is queued for writing. */
     void start(EventExecutor executor, Runnable onTimeout) {
         startNanos = System.nanoTime();
         if (!timeout.isZero()) {
             timeoutTask = executor.schedule(() -> {
                 if (promise.completeExceptionally(new CommandTimeoutException(command.describe(), timeout))) {
+                    timedOut = true;
                     onTimeout.run();
                 }
             }, timeout.toNanos(), TimeUnit.NANOSECONDS);

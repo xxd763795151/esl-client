@@ -155,7 +155,8 @@ final class EslProtocolHandler extends ChannelDuplexHandler {
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (evt instanceof IdleStateEvent) {
-            listener.onReadIdle(pending.size());
+            PendingCommand oldest = pending.peekFirst();
+            listener.onReadIdle(pending.size(), oldest != null && oldest.isTimedOut());
         } else {
             ctx.fireUserEventTriggered(evt);
         }

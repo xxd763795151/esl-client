@@ -3,6 +3,7 @@ package io.github.xxd763795151.esl.inbound;
 import io.github.xxd763795151.esl.app.PlayAndGetDigits;
 import io.github.xxd763795151.esl.command.ApiResponse;
 import io.github.xxd763795151.esl.command.BackgroundJobResult;
+import io.github.xxd763795151.esl.command.CommandReply;
 import io.github.xxd763795151.esl.command.ExecuteResult;
 import io.github.xxd763795151.esl.connection.ConnectionState;
 import io.github.xxd763795151.esl.connection.EslResources;
@@ -31,6 +32,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -349,6 +351,54 @@ class InboundClientTest {
     }
 
     @Test
+    void peerThatStopsAnsweringIsResetAfterACommandTimesOut() throws Exception {
+        AtomicInteger connections = new AtomicInteger();
+        fs.handler((peer, command) -> {
+            if (command.is("auth")) {
+                connections.incrementAndGet();
+            }
+            // the first connection hangs on this command: the socket stays open but nothing comes back
+            return connections.get() == 1 && command.line().equals("api status");
+        });
+        connect(builder().idleTimeout(Duration.ofMillis(300)).commandTimeout(Duration.ofMillis(300)));
+        FakePeer first = fs.awaitPeer(WAIT);
+
+        assertThatThrownBy(() -> client.api("status").get(5, TimeUnit.SECONDS))
+                .hasCauseInstanceOf(CommandTimeoutException.class);
+
+        first.closeFuture().get(5, TimeUnit.SECONDS);
+        await().atMost(WAIT).until(() -> connections.get() == 2 && client.state() == ConnectionState.READY);
+        assertThat(client.api("echo", "back").get(5, TimeUnit.SECONDS).body()).isEqualTo("back");
+    }
+
+    @Test
+    void stateIsRecordedInReplyOrderWhateverOrderWorkersRunIn() throws Exception {
+        HeldExecutor worker = new HeldExecutor();
+        try (EslResources resources = EslResources.builder().workerExecutor(worker).build()) {
+            connect(builder().resources(resources));
+            FakePeer first = fs.awaitPeer(WAIT);
+            worker.holding = true;
+            CompletableFuture<CommandReply> subscribed = client.subscribe("CHANNEL_ANSWER");
+            CompletableFuture<CommandReply> unsubscribed = client.unsubscribe("CHANNEL_ANSWER");
+            await().atMost(WAIT).until(() -> worker.held.size() == 2);
+
+            // the unsubscribe completion runs before the subscribe completion
+            worker.holding = false;
+            worker.held.get(1).run();
+            worker.held.get(0).run();
+            subscribed.get(5, TimeUnit.SECONDS);
+            unsubscribed.get(5, TimeUnit.SECONDS);
+            first.close();
+
+            FakePeer second = fs.awaitPeer(WAIT);
+            await().atMost(WAIT).until(() -> client.state() == ConnectionState.READY);
+            assertThat(second.receivedLines()).containsExactly("auth ClueCon");
+            client.close();
+            client = null;
+        }
+    }
+
+    @Test
     void gracefulCloseSendsExitAndStopsAllThreads() throws Exception {
         connect(builder().name("closing"));
         FakePeer peer = fs.awaitPeer(WAIT);
@@ -411,5 +461,20 @@ class InboundClientTest {
                 .filter(name -> name.startsWith(prefix))
                 .forEach(names::add);
         return names;
+    }
+
+    /** Runs tasks inline, or holds them back so a test can run them in any order. */
+    private static final class HeldExecutor implements Executor {
+        final List<Runnable> held = new CopyOnWriteArrayList<>();
+        volatile boolean holding;
+
+        @Override
+        public void execute(Runnable task) {
+            if (holding) {
+                held.add(task);
+            } else {
+                task.run();
+            }
+        }
     }
 }

@@ -19,6 +19,8 @@ import java.util.Set;
 public final class SessionState {
 
     private final Set<String> events = new LinkedHashSet<>();
+    /** Events removed while {@code ALL} is subscribed: FreeSWITCH then receives everything but these. */
+    private final Set<String> excluded = new LinkedHashSet<>();
     private final Set<String> customSubclasses = new LinkedHashSet<>();
     private final Set<Map.Entry<String, String>> filters = new LinkedHashSet<>();
     private EventFormat format;
@@ -34,6 +36,7 @@ public final class SessionState {
             addEventTokens(nix.events(), false);
         } else if (command instanceof EslCommand.NoEvents) {
             events.clear();
+            excluded.clear();
             customSubclasses.clear();
         } else if (command instanceof EslCommand.Filter filter) {
             filters.add(Map.entry(filter.header(), filter.value()));
@@ -56,7 +59,9 @@ public final class SessionState {
 
     /**
      * FreeSWITCH treats every token after {@code CUSTOM} as a subclass, which is why subclasses are tracked
-     * separately and always replayed last.
+     * separately and always replayed last. Removing an event while {@code ALL} is subscribed makes FreeSWITCH
+     * expand {@code ALL} into every single event but that one ({@code nixevent CUSTOM} only switches to
+     * subclasses), which is mirrored as an exclusion.
      */
     private void addEventTokens(List<String> tokens, boolean add) {
         boolean custom = false;
@@ -72,10 +77,18 @@ public final class SessionState {
             String name = token.toUpperCase(Locale.ROOT);
             if (add) {
                 events.add(name);
+                if (EventNames.ALL.equals(name)) {
+                    excluded.clear();
+                } else {
+                    excluded.remove(name);
+                }
+            } else if (EventNames.ALL.equals(name)) {
+                events.clear();
+                excluded.clear();
             } else {
                 events.remove(name);
-                if (EventNames.ALL.equals(name)) {
-                    events.clear();
+                if (events.contains(EventNames.ALL) && !EventNames.CUSTOM.equals(name)) {
+                    excluded.add(name);
                 }
             }
             custom = EventNames.CUSTOM.equals(name);
@@ -83,7 +96,8 @@ public final class SessionState {
     }
 
     public synchronized boolean isSubscribed(String eventName) {
-        return events.contains(EventNames.ALL) || events.contains(eventName.toUpperCase(Locale.ROOT));
+        String name = eventName.toUpperCase(Locale.ROOT);
+        return events.contains(name) || (events.contains(EventNames.ALL) && !excluded.contains(name));
     }
 
     public synchronized boolean myEventsEnabled() {
@@ -92,6 +106,7 @@ public final class SessionState {
 
     public synchronized void clear() {
         events.clear();
+        excluded.clear();
         customSubclasses.clear();
         filters.clear();
         logLevel = null;
@@ -109,6 +124,9 @@ public final class SessionState {
         }
         if (!tokens.isEmpty()) {
             commands.add(new EslCommand.Event(format != null ? format : defaultFormat, tokens));
+        }
+        if (events.contains(EventNames.ALL) && !excluded.isEmpty()) {
+            commands.add(new EslCommand.NixEvent(List.copyOf(excluded)));
         }
         filters.forEach(filter -> commands.add(new EslCommand.Filter(filter.getKey(), filter.getValue())));
         if (logLevel != null) {

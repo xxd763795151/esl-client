@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -153,26 +154,47 @@ public final class ChannelConnection implements ProtocolListener {
 
     public CompletableFuture<EslMessage> sendRaw(EslCommand command, Duration timeout) {
         PendingCommand pending = new PendingCommand(command, timeout);
-        if (!channel.isActive()) {
-            pending.fail(new ConnectionClosedException("Connection is not active", closeCause));
-            return pending.promise();
-        }
-        // the handler fails the command on write errors while it is queued; this covers writes that never
-        // reach the handler because the pipeline is already torn down
-        channel.writeAndFlush(pending).addListener(future -> {
-            if (!future.isSuccess()) {
-                pending.fail(new ConnectionClosedException("Failed to write " + command.describe(), future.cause()));
-            }
-        });
+        write(pending);
         return pending.promise();
     }
 
     /** Sends a user command and maps the reply on a worker thread. */
     public <T> CompletableFuture<T> send(EslCommand command, Function<EslMessage, T> mapper) {
+        return send(command, reply -> { }, mapper);
+    }
+
+    /**
+     * Like {@link #send(EslCommand, Function)}, but first hands the reply to {@code onReply} on the event loop,
+     * in reply order (worker threads would reorder it). For bookkeeping only: it must not block.
+     */
+    public <T> CompletableFuture<T> send(EslCommand command, Consumer<EslMessage> onReply,
+                                         Function<EslMessage, T> mapper) {
         if (closing.get()) {
             return EslFuture.failed(new ConnectionClosedException("Connection is closing", closeCause));
         }
-        return Futures.relay(sendRaw(command), mapper, worker);
+        PendingCommand pending = new PendingCommand(command, settings.commandTimeout());
+        // attached before the write, so it runs on the event loop that completes the promise with the reply
+        CompletableFuture<EslMessage> replied = pending.promise().thenApply(reply -> {
+            onReply.accept(reply);
+            return reply;
+        });
+        write(pending);
+        return Futures.relay(replied, mapper, worker);
+    }
+
+    private void write(PendingCommand pending) {
+        if (!channel.isActive()) {
+            pending.fail(new ConnectionClosedException("Connection is not active", closeCause));
+            return;
+        }
+        // the handler fails the command on write errors while it is queued; this covers writes that never
+        // reach the handler because the pipeline is already torn down
+        channel.writeAndFlush(pending).addListener(future -> {
+            if (!future.isSuccess()) {
+                pending.fail(new ConnectionClosedException("Failed to write " + pending.command().describe(),
+                        future.cause()));
+            }
+        });
     }
 
     /**
@@ -381,10 +403,21 @@ public final class ChannelConnection implements ProtocolListener {
     }
 
     @Override
-    public void onReadIdle(int pendingCommands) {
-        if (pendingCommands > 0 || closing.get()) {
+    public void onReadIdle(int pendingCommands, boolean oldestTimedOut) {
+        if (closing.get()) {
+            return;
+        }
+        if (oldestTimedOut) {
+            // the oldest command outlived its timeout and nothing at all arrived since: the peer is hung. The
+            // timed out command stays queued to keep late replies aligned, so only a new socket recovers
+            log.warn("{} did not answer a timed out command and sent nothing for {}, resetting connection",
+                    channel.remoteAddress(), settings.idleTimeout());
+            abort(new ConnectionClosedException("No reply to a timed out command"));
+            return;
+        }
+        if (pendingCommands > 0) {
             // replies are outstanding (FreeSWITCH processes commands sequentially, a slow api blocks the
-            // socket); their own timeouts detect a dead peer
+            // socket); a probe would only queue behind them
             return;
         }
         log.debug("{} idle for {}, probing", channel.remoteAddress(), settings.idleTimeout());

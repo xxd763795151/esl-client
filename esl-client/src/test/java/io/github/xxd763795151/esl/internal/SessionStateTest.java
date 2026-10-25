@@ -43,4 +43,45 @@ class SessionStateTest {
         assertThat(state.isSubscribed("BACKGROUND_JOB")).isFalse();
         assertThat(state.replayCommands(EventFormat.PLAIN)).isEmpty();
     }
+
+    @Test
+    void removingAnEventUnderAllExcludesItAndReplaysTheExclusion() {
+        SessionState state = new SessionState();
+        state.record(new EslCommand.Event(EventFormat.PLAIN, List.of("ALL")));
+        state.record(new EslCommand.NixEvent(List.of("channel_execute_complete")));
+
+        assertThat(state.isSubscribed("CHANNEL_EXECUTE_COMPLETE")).isFalse();
+        assertThat(state.isSubscribed("CHANNEL_ANSWER")).isTrue();
+        assertThat(state.replayCommands(EventFormat.PLAIN)).extracting(EslCommand::commandLine).containsExactly(
+                "event plain ALL",
+                "nixevent CHANNEL_EXECUTE_COMPLETE");
+
+        state.record(new EslCommand.Event(EventFormat.PLAIN, List.of("CHANNEL_EXECUTE_COMPLETE")));
+
+        assertThat(state.isSubscribed("CHANNEL_EXECUTE_COMPLETE")).isTrue();
+        assertThat(state.replayCommands(EventFormat.PLAIN)).extracting(EslCommand::commandLine)
+                .containsExactly("event plain ALL CHANNEL_EXECUTE_COMPLETE");
+    }
+
+    @Test
+    void subscribingOrRemovingAllForgetsExclusions() {
+        SessionState state = new SessionState();
+        state.record(new EslCommand.Event(EventFormat.PLAIN, List.of("ALL")));
+        state.record(new EslCommand.NixEvent(List.of("DTMF", "CUSTOM", "sofia::register")));
+
+        assertThat(state.isSubscribed("DTMF")).isFalse();
+        // like FreeSWITCH, nixevent CUSTOM only switches to subclasses
+        assertThat(state.isSubscribed("CUSTOM")).isTrue();
+
+        state.record(new EslCommand.Event(EventFormat.PLAIN, List.of("ALL")));
+
+        assertThat(state.isSubscribed("DTMF")).isTrue();
+
+        state.record(new EslCommand.NixEvent(List.of("DTMF")));
+        state.record(new EslCommand.NixEvent(List.of("ALL")));
+
+        assertThat(state.isSubscribed("DTMF")).isFalse();
+        assertThat(state.isSubscribed("CHANNEL_ANSWER")).isFalse();
+        assertThat(state.replayCommands(EventFormat.PLAIN)).isEmpty();
+    }
 }

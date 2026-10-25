@@ -606,12 +606,11 @@ public final class InboundClient extends AbstractConnection {
 
         @Override
         public CompletableFuture<EslMessage> send(EslCommand command) {
-            return Futures.relay(connection.sendRaw(command), reply -> {
+            return connection.send(command, reply -> {
                 if (new CommandReply(reply).isOk()) {
                     sessionState.record(command);
                 }
-                return reply;
-            }, worker);
+            }, Function.identity());
         }
     }
 

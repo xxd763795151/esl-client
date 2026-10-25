@@ -2,6 +2,7 @@ package io.github.xxd763795151.esl.outbound;
 
 import io.github.xxd763795151.esl.app.CallChannel;
 import io.github.xxd763795151.esl.app.PlayAndGetDigits;
+import io.github.xxd763795151.esl.connection.ConnectionState;
 import io.github.xxd763795151.esl.event.EslEvent;
 import io.github.xxd763795151.esl.test.FakeFreeSwitch;
 import io.github.xxd763795151.esl.test.FakePeer;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,10 +25,12 @@ class OutboundServerTest {
     private static final Duration WAIT = Duration.ofSeconds(5);
 
     private final FakeFreeSwitch fs = FakeFreeSwitch.dialer();
+    private final CountDownLatch releaseListener = new CountDownLatch(1);
     private OutboundServer server;
 
     @AfterEach
     void stop() {
+        releaseListener.countDown();
         if (server != null) {
             server.close();
         }
@@ -188,5 +192,54 @@ class OutboundServerTest {
         second.closeFuture().get(5, TimeUnit.SECONDS);
         assertThat(second.received()).isEmpty();
         assertThat(first.isOpen()).isTrue();
+    }
+
+    @Test
+    void closeIsBoundedByItsTimeoutWhileAListenerBlocks() throws Exception {
+        OutboundSession session = blockedListenerSession(OutboundServer.builder(), "call-9").session();
+        long start = System.nanoTime();
+
+        session.closeGracefully(Duration.ofMillis(300)).get(5, TimeUnit.SECONDS);
+
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+        assertThat(session.state()).isEqualTo(ConnectionState.CLOSED);
+        assertThat(server.sessions()).isEmpty();
+    }
+
+    @Test
+    void sessionClosedByThePeerIsReleasedWhileAListenerBlocks() throws Exception {
+        BlockedCall call = blockedListenerSession(
+                OutboundServer.builder().sessionCloseTimeout(Duration.ofMillis(300)), "call-10");
+
+        call.peer().close();
+
+        call.session().closeFuture().get(5, TimeUnit.SECONDS);
+        assertThat(server.sessions()).isEmpty();
+    }
+
+    private record BlockedCall(OutboundSession session, FakePeer peer) {
+    }
+
+    /** A call whose event listener is stuck until {@link #releaseListener} opens. */
+    private BlockedCall blockedListenerSession(OutboundServer.Builder builder, String uuid) throws Exception {
+        CountDownLatch blocked = new CountDownLatch(1);
+        CompletableFuture<OutboundSession> connected = new CompletableFuture<>();
+        start(builder.handler(new OutboundSessionHandler() {
+            @Override
+            public void onConnect(OutboundSession session) {
+                connected.complete(session);
+            }
+
+            @Override
+            public void onEvent(OutboundSession session, EslEvent event) throws InterruptedException {
+                blocked.countDown();
+                releaseListener.await(10, TimeUnit.SECONDS);
+            }
+        }));
+        FakePeer peer = dial(uuid);
+        OutboundSession session = connected.get(5, TimeUnit.SECONDS);
+        peer.event("CHANNEL_ANSWER", uuid, Map.of());
+        assertThat(blocked.await(5, TimeUnit.SECONDS)).isTrue();
+        return new BlockedCall(session, peer);
     }
 }
